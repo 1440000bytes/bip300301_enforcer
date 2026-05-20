@@ -26,7 +26,7 @@ $ cargo build
 # See available options
 $ cargo run -- --help
 
-# Starts the gRPC server at localhost:50001
+# Starts the Connect RPC server at localhost:50001
 # Adjust these parameters to match your local Bitcoin
 # Core instance
 $ cargo run -- \
@@ -36,7 +36,7 @@ $ cargo run -- \
   --node-zmq-addr-sequence=tcp://0.0.0.0:29000
 
 # You should now be able to fetch data from the server!
-$ buf curl  --http2-prior-knowledge --protocol grpc \
+$ curl -H 'application/json' \
         http://localhost:50051/cusf.validator.v1.ValidatorService/GetChainInfo
 {
   "network": "NETWORK_SIGNET"
@@ -45,17 +45,18 @@ $ buf curl  --http2-prior-knowledge --protocol grpc \
 
 # Interacting with the enforcer
 
-The CUSF enforcer exposes multiple gRPC services. These can be interacted with
-using a gRPC client of your choice, for example
+The CUSF enforcer exposes multiple [Connect](https://connectrpc.com/) (gRPC)
+services. These can be interacted with using either plain `curl` or a
+Connect/gRPC client of your choice, for example
 [`buf curl`](https://buf.build/docs/installation/) or
 [`grpcurl`](https://github.com/fullstorydev/grpcurl).
 
-Some examples of interacting with the enforcer using `buf curl`, assuming you
-expose the server at the default address `localhost:50051`:
+Some examples of interacting with the enforcer using `curl`, assuming you expose
+the server at the default address `localhost:50051`:
 
 ```bash
 # Define an alias for ease of use
-$ alias buf_curl='buf curl --http2-prior-knowledge --protocol grpc --emit-defaults'
+$ alias enforcer_curl='curl -X POST -H "Content-Type: application/json"'
 
 # List all the available RPCs
 $ buf_curl --list-methods http://localhost:50051
@@ -68,14 +69,14 @@ cusf.mainchain.v1.WalletService/CreateSidechainProposal
 ... list continues
 
 # Fetching data with a RPC that takes no input data
-$ buf_curl http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetChainInfo
+$ enforcer_curl http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetChainInfo
 {
   "network": "NETWORK_SIGNET"
 }
 
 # Fetching data with a RPC that takes input data
 $ request='{"block_hash": {"hex": "000002a78fc54150bb2d4cdb0fb19bcf744f2877faf90a172972fca5daf5fe92"}}'
-$ buf_curl -d "$request" http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetBlockHeaderInfo
+$ enforcer_curl -d "$request" http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetBlockHeaderInfo
 {
   "headerInfo": {
     "blockHash": {
@@ -90,11 +91,6 @@ $ buf_curl -d "$request" http://localhost:50051/cusf.mainchain.v1.ValidatorServi
     }
   }
 }
-
-# Note that the request can also be read from a file. This can come in handy if
-# you're working on more complex requests that's hard to write out on the terminal
-echo "$request" > request.json
-$ buf_curl -d @request.json http://localhost:50051/cusf.mainchain.v1.ValidatorService/GetBlockHeaderInfo
 ```
 
 # Regtest
@@ -139,16 +135,9 @@ $ RUST_LOG=info,bip300301_enforcer=debug cargo run ...
 
 # Working with the proto files
 
-Code is generated with [protox](https://github.com/andrewhickman/protox), and
-happens automatically as part of the build process.
-
-Files are linted with [protolint](https://github.com/yoheimuta/protolint).
-
-To lint the files, run:
-
-```bash
-$ protolint lint --fix proto/validator/v1/validator.proto
-```
+The proto files live in the
+[cusf_sidechain_proto](https://github.com/LayerTwo-Labs/cusf_sidechain_proto)
+repo. Code is generated with `buf` and checked into Git.
 
 # Code formatting
 

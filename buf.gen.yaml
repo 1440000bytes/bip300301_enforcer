@@ -1,0 +1,21 @@
+# https://buf.build/docs/configuration/v2/buf-gen-yaml/
+version: v2
+
+inputs:
+  - git_repo: https://github.com/LayerTwo-Labs/cusf_sidechain_proto.git
+    ref: 3012c02cc1ac3d2d8f2384172e96b7018413fb3a
+    subdir: proto
+
+plugins:
+  - remote: buf.build/anthropics/buffa:v0.6.0
+    out: lib/proto/generated/buffa
+    opt:
+      - file_per_package=true # needed for remote generation to work
+      - unknown_fields=false # makes destructuring more ergonomic
+      - json=true # serde impls for the Connect JSON wire format
+      - views=true # zero-copy *View types used by handler signatures
+  - remote: buf.build/anthropics/connect-rust:v0.6.0
+    out: lib/proto/generated/connect
+    opt:
+      - file_per_package
+      - buffa_module=crate::proto::generated::buffa

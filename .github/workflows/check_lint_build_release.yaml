@@ -44,13 +44,29 @@ jobs:
         # import formatting is nightly only
         run: cargo +nightly fmt --all -- --check
 
+  check-buf-generate:
+    name: Check buf generate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: Verify generated files are up to date
+        # If this fails: someone hand-edited `lib/proto/generated/`,
+        # or the proto/plugin pins changed without regenerating. Run
+        # `buf generate --clean` locally and commit the result.
+        run: |
+          buf generate --clean
+          git diff --exit-code -- lib/proto/generated/
+
   check-clippy-nightly:
     name: Check Clippy (nightly)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -71,8 +87,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       # Must happen /after/ the checkout step, to pick up the toolchain
       # from the `rust-toolchain.toml` file.
@@ -234,8 +248,6 @@ jobs:
           cargo build --locked --release
 
       - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       # `rustup` is already installed on GitHub Actions runners, so
       # this reads the content from our `rust-toolchain.toml` file.
@@ -306,8 +318,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-        with:
-          submodules: "recursive"
 
       # Must happen /after/ the checkout step, to pick up the toolchain
       - run: rustup target add ${{ matrix.name }}

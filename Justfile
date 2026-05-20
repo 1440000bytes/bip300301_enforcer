@@ -1,6 +1,9 @@
 default:
     @just --list
 
+generate:
+    buf generate --clean
+
 clippy:
     cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged -- --deny warnings
     cargo +nightly clippy -- -A clippy::all -D unqualified_local_imports -Zcrate-attr="feature(unqualified_local_imports)"
