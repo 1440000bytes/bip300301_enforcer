@@ -311,9 +311,11 @@ fn handle_m4_leading_by_50(
             .pending_m6ids()
             .get(rotxn, &sidechain_number)?;
 
-        let mut by_votes: Vec<(M6id, u16)> =
-            pending.iter().map(|(m, i)| (*m, i.vote_count)).collect();
-        by_votes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        let mut by_votes: Vec<(M6id, u16)> = pending
+            .iter()
+            .map(|(m6id, info)| (*m6id, info.vote_count))
+            .collect();
+        by_votes.sort_unstable_by_key(|(_m6id, vote_count)| std::cmp::Reverse(*vote_count));
 
         let Some(&(leader_m6id, lead_votes)) = by_votes.first() else {
             continue;
