@@ -33,6 +33,7 @@ byteorder = "1.5.0"
 cfg-if = "1.0.0"
 clap = { version = "4.5.60", default-features = false }
 connectrpc = { version = "0.6", features = ["axum", "client", "server"] }
+connectrpc-health = { git = "https://github.com/torkelrogstad/connect-rust.git", rev = "dfde93dd1b48d6aa5accd68fbe3231a85f330ef6" }
 derive_more = "2.0.1"
 dotenvy = "0.15.7"
 either = "1.13.0"
@@ -126,7 +127,14 @@ branch = "2026-02-28-flush-tcpstream"
 git = "https://gitlab.com/A-Manning/leonhard-llc-ops.git"
 branch = "temp-dir-leak"
 
-# Have to use a patch here. Depending directly on the fork breaks macros. 
+# Have to use a patch here. Depending directly on the fork breaks macros.
 [patch.crates-io.tracing-appender]
 git = "https://github.com/torkelrogstad/tokio-tracing.git"
 branch = "log-rotation-size"
+
+# Use the torkelrogstad fork until upstream connectrpc 0.6.0 + connectrpc-health
+# are published to crates.io. Rev is pinned to the tip of the
+# `2026-05-21-health` branch.
+[patch.crates-io.connectrpc]
+git = "https://github.com/torkelrogstad/connect-rust.git"
+rev = "dfde93dd1b48d6aa5accd68fbe3231a85f330ef6"

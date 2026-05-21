@@ -471,6 +471,7 @@ dependencies = [
  "buffa",
  "clap",
  "connectrpc",
+ "connectrpc-health",
  "cusf-enforcer-mempool",
  "educe",
  "either",
@@ -937,8 +938,7 @@ dependencies = [
 [[package]]
 name = "connectrpc"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3382e121377f6c160bbbe56f5809637ccbabff7edbf56bb8e96cc64e65998045"
+source = "git+https://github.com/torkelrogstad/connect-rust.git?rev=dfde93dd1b48d6aa5accd68fbe3231a85f330ef6#dfde93dd1b48d6aa5accd68fbe3231a85f330ef6"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -966,6 +966,21 @@ dependencies = [
  "tracing",
  "wasm-bindgen-futures",
  "zstd",
+]
+
+[[package]]
+name = "connectrpc-health"
+version = "0.6.0"
+source = "git+https://github.com/torkelrogstad/connect-rust.git?rev=dfde93dd1b48d6aa5accd68fbe3231a85f330ef6#dfde93dd1b48d6aa5accd68fbe3231a85f330ef6"
+dependencies = [
+ "buffa",
+ "connectrpc",
+ "futures",
+ "http-body",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
