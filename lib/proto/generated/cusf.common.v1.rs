@@ -4,34 +4,52 @@
 /// / Variable length data uses a length prefix.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConsensusHex {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub hex: ::core::option::Option<::prost::alloc::string::String>,
 }
 impl ::prost::Name for ConsensusHex {
-const NAME: &'static str = "ConsensusHex";
-const PACKAGE: &'static str = "cusf.common.v1";
-fn full_name() -> ::prost::alloc::string::String { "cusf.common.v1.ConsensusHex".into() }fn type_url() -> ::prost::alloc::string::String { "/cusf.common.v1.ConsensusHex".into() }}
+    const NAME: &'static str = "ConsensusHex";
+    const PACKAGE: &'static str = "cusf.common.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "cusf.common.v1.ConsensusHex".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/cusf.common.v1.ConsensusHex".into()
+    }
+}
 /// / Hex encoding of byte arrays/vectors.
 /// / Length prefixes are not used.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Hex {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub hex: ::core::option::Option<::prost::alloc::string::String>,
 }
 impl ::prost::Name for Hex {
-const NAME: &'static str = "Hex";
-const PACKAGE: &'static str = "cusf.common.v1";
-fn full_name() -> ::prost::alloc::string::String { "cusf.common.v1.Hex".into() }fn type_url() -> ::prost::alloc::string::String { "/cusf.common.v1.Hex".into() }}
+    const NAME: &'static str = "Hex";
+    const PACKAGE: &'static str = "cusf.common.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "cusf.common.v1.Hex".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/cusf.common.v1.Hex".into()
+    }
+}
 /// / Reverse consensus-encoded hex
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ReverseHex {
-    #[prost(message, optional, tag="1")]
+    #[prost(message, optional, tag = "1")]
     pub hex: ::core::option::Option<::prost::alloc::string::String>,
 }
 impl ::prost::Name for ReverseHex {
-const NAME: &'static str = "ReverseHex";
-const PACKAGE: &'static str = "cusf.common.v1";
-fn full_name() -> ::prost::alloc::string::String { "cusf.common.v1.ReverseHex".into() }fn type_url() -> ::prost::alloc::string::String { "/cusf.common.v1.ReverseHex".into() }}
+    const NAME: &'static str = "ReverseHex";
+    const PACKAGE: &'static str = "cusf.common.v1";
+    fn full_name() -> ::prost::alloc::string::String {
+        "cusf.common.v1.ReverseHex".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/cusf.common.v1.ReverseHex".into()
+    }
+}
 /// Encoded file descriptor set for the `cusf.common.v1` package
 pub const FILE_DESCRIPTOR_SET: &[u8] = &[
     0x0a, 0xec, 0x05, 0x0a, 0x1b, 0x63, 0x75, 0x73, 0x66, 0x2f, 0x63, 0x6f, 0x6d, 0x6d, 0x6f, 0x6e,
