@@ -13,7 +13,7 @@ use bitcoin::{
 };
 use either::Either;
 use error_fatality::{Fatality as _, Split as _};
-use fallible_iterator::FallibleIterator;
+use fallible_iterator::{FallibleIterator, IteratorExt};
 use futures::FutureExt as _;
 use jsonrpsee::core::{
     client::BatchResponse,
@@ -70,7 +70,8 @@ impl<'a> BlockHandler<'a> {
 const LEADING_BY_50_MARGIN: u16 = 50;
 
 /// Deposit or (sidechain_id, m6id, sequence_number)
-type DepositOrSuccessfulWithdrawal = Either<Deposit, (SidechainNumber, M6id, u64)>;
+type DepositsOrSuccessfulWithdrawal =
+    Either<(HashMap<SidechainNumber, Deposit>, diff::M5), ((SidechainNumber, M6id, u64), diff::M6)>;
 
 #[derive(Debug)]
 enum CoinbaseMessageEvent {
@@ -80,7 +81,7 @@ enum CoinbaseMessageEvent {
 
 #[derive(Debug)]
 enum TransactionEvent {
-    Deposit(Deposit),
+    Deposits(HashMap<SidechainNumber, Deposit>),
     WithdrawalBundle(WithdrawalBundleEvent),
 }
 
@@ -599,107 +600,149 @@ impl BlockHandler<'_> {
         &self,
         rotxn: &RoTxn,
         transaction: Cow<'_, Transaction>,
-    ) -> Result<Option<(DepositOrSuccessfulWithdrawal, diff::Tx)>, error::HandleM5M6> {
+    ) -> Result<Option<DepositsOrSuccessfulWithdrawal>, error::HandleM5M6> {
         let dbs = &self.dbs.active_sidechains;
         let txid = transaction.compute_txid();
-        // TODO: Check that there is only one OP_DRIVECHAIN per sidechain slot.
-        let (sidechain_number, new_ctip) = {
-            let Some(treasury_output) = transaction.output.first() else {
-                return Ok(None);
-            };
-            // If OP_DRIVECHAIN script is invalid,
-            // for example if it is missing OP_TRUE at the end,
-            // it will just be ignored.
-            if let Ok((_input, sidechain_number)) =
-                parse_op_drivechain(&treasury_output.script_pubkey.to_bytes())
-            {
-                let new_ctip = Ctip {
-                    outpoint: OutPoint { txid, vout: 0 },
-                    value: treasury_output.value,
-                };
-                (sidechain_number, new_ctip)
-            } else {
-                return Ok(None);
-            }
-        };
-        let old_treasury_value = {
-            if let Some(old_ctip) = dbs.ctip().try_get(rotxn, &sidechain_number)? {
-                let old_ctip_found = transaction
-                    .input
-                    .iter()
-                    .any(|input| input.previous_output == old_ctip.outpoint);
-                if !old_ctip_found {
-                    return Err(error::HandleM5M6::OldCtipUnspent { sidechain_number });
+        let ctip_spends: HashMap<SidechainNumber, bitcoin::Amount> = transaction
+            .input
+            .iter()
+            .map(Result::<_, error::HandleM5M6>::Ok)
+            .transpose_into_fallible()
+            .filter_map(|input| {
+                dbs.ctip_outpoint_to_value_seq()
+                    .try_get(rotxn, &input.previous_output)?
+                    .map(|(sidechain_number, amount, _)| Ok((sidechain_number, amount)))
+                    .transpose()
+            })
+            .collect()?;
+        let new_ctips = {
+            let mut new_ctips = HashMap::<SidechainNumber, Ctip>::new();
+            for (vout, output) in transaction.output.iter().enumerate() {
+                if let Ok((_input, sidechain_number)) =
+                    parse_op_drivechain(output.script_pubkey.as_bytes())
+                {
+                    let new_ctip = Ctip {
+                        outpoint: OutPoint {
+                            txid,
+                            vout: vout as u32,
+                        },
+                        value: output.value,
+                    };
+                    if new_ctips.insert(sidechain_number, new_ctip).is_some() {
+                        return Err(error::HandleM5M6::MultipleOpDrivechainOutputs(
+                            sidechain_number,
+                        ));
+                    }
                 }
-                old_ctip.value
+            }
+            new_ctips
+        };
+        // Check that old ctips are spent
+        let mut res = Option::<DepositsOrSuccessfulWithdrawal>::None;
+        for (sidechain_number, new_ctip) in new_ctips {
+            let old_treasury_value = if dbs.ctip().contains_key(rotxn, &sidechain_number)? {
+                *ctip_spends
+                    .get(&sidechain_number)
+                    .ok_or_else(|| error::HandleM5M6::OldCtipUnspent { sidechain_number })?
+            } else if ctip_spends.contains_key(&sidechain_number) {
+                return Err(error::HandleM5M6::CtipDbsInconsistent {
+                    sidechain: sidechain_number,
+                    db_exists_in: dbs.ctip_outpoint_to_value_seq().name().to_owned(),
+                    db_missing_in: dbs.ctip().name().to_owned(),
+                });
             } else {
                 Amount::ZERO
-            }
-        };
-        match new_ctip.value.cmp(&old_treasury_value) {
-            // M6
-            Ordering::Less => {
-                if transaction.input.len() != 1 {
-                    return Ok(None);
+            };
+            match new_ctip.value.cmp(&old_treasury_value) {
+                // M6
+                Ordering::Less => {
+                    if transaction.input.len() != 1 {
+                        return Err(error::HandleM5M6::InvalidM6);
+                    }
+                    if new_ctip.outpoint.vout != 0 {
+                        return Err(error::HandleM5M6::InvalidM6);
+                    }
+                    let (m6id, sidechain_number_, info) = self.handle_m6(
+                        rotxn,
+                        transaction.clone().into_owned(),
+                        old_treasury_value,
+                    )?;
+                    // `handle_m6` → `compute_m6id` parses the same first-output script
+                    // that we already parsed above. Mismatch would mean the parser is
+                    // non-deterministic (impossible) or the transaction was mutated
+                    // between the two parses — both indicate a serious invariant
+                    // violation.
+                    assert_eq!(
+                        sidechain_number, sidechain_number_,
+                        "invariant violation: parse_op_drivechain returned different \
+                        sidechain numbers for the same output",
+                    );
+                    let sequence_number = dbs
+                        .treasury_utxo_count
+                        .try_get(rotxn, &sidechain_number)?
+                        .unwrap_or(0);
+                    let diff = diff::M6 {
+                        sidechain_number,
+                        new_ctip,
+                        removed_pending_withdrawal: m6id,
+                        removed_pending_withdrawal_info: info,
+                    };
+                    if let Some(res) = res {
+                        return Err(match res {
+                            Either::Left(_) => error::HandleM5M6::Ambiguous,
+                            Either::Right(_) =>
+                            // Should be impossible due to tx having a
+                            // single input, but return an error anyway
+                            {
+                                error::HandleM5M6::InvalidM6
+                            }
+                        });
+                    } else {
+                        res = Some(Either::Right((
+                            (sidechain_number, m6id, sequence_number),
+                            diff,
+                        )));
+                    }
                 }
-                let (m6id, sidechain_number_, info) =
-                    self.handle_m6(rotxn, transaction.into_owned(), old_treasury_value)?;
-                // `handle_m6` → `compute_m6id` parses the same first-output script
-                // that we already parsed above. Mismatch would mean the parser is
-                // non-deterministic (impossible) or the transaction was mutated
-                // between the two parses — both indicate a serious invariant
-                // violation.
-                assert_eq!(
-                    sidechain_number, sidechain_number_,
-                    "invariant violation: parse_op_drivechain returned different \
-                 sidechain numbers for the same output",
-                );
-                let sequence_number = dbs
-                    .treasury_utxo_count
-                    .try_get(rotxn, &sidechain_number)?
-                    .unwrap_or(0);
-                let diff = diff::Tx {
-                    sidechain_number,
-                    new_ctip,
-                    removed_pending_withdrawal: Some((m6id, info)),
-                };
-                let res = Either::Right((sidechain_number, m6id, sequence_number));
-                Ok(Some((res, diff)))
-            }
-            // M5
-            Ordering::Greater => {
-                let Some(address_output) = transaction.output.get(1) else {
-                    return Ok(None);
-                };
-                let Some(address) =
-                    crate::messages::try_parse_op_return_address(&address_output.script_pubkey)
-                else {
-                    return Ok(None);
-                };
-                let sequence_number = dbs
-                    .treasury_utxo_count
-                    .try_get(rotxn, &sidechain_number)?
-                    .unwrap_or(0);
-                let deposit = Deposit {
-                    sequence_number,
-                    sidechain_id: sidechain_number,
-                    outpoint: new_ctip.outpoint,
-                    address,
-                    value: new_ctip.value - old_treasury_value,
-                };
-                let res = Either::Left(deposit);
-                let diff = diff::Tx {
-                    sidechain_number,
-                    new_ctip,
-                    removed_pending_withdrawal: None,
-                };
-                Ok(Some((res, diff)))
-            }
-            Ordering::Equal => {
-                // FIXME: is it ok to treat this as a regular TX?
-                Ok(None)
+                // M5
+                Ordering::Greater => {
+                    let address = if let Some(address_output) =
+                        transaction.output.get(new_ctip.outpoint.vout as usize + 1)
+                    {
+                        crate::messages::try_parse_op_return_address(&address_output.script_pubkey)
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    let sequence_number = dbs
+                        .treasury_utxo_count
+                        .try_get(rotxn, &sidechain_number)?
+                        .unwrap_or(0);
+                    let deposit = Deposit {
+                        sequence_number,
+                        outpoint: new_ctip.outpoint,
+                        address,
+                        value: new_ctip.value - old_treasury_value,
+                    };
+                    match res.as_mut() {
+                        Some(Either::Right(_)) => return Err(error::HandleM5M6::Ambiguous),
+                        Some(Either::Left((deposits, diff))) => {
+                            deposits.insert(sidechain_number, deposit);
+                            diff.new_ctips.insert(sidechain_number, new_ctip);
+                        }
+                        None => {
+                            let diff = diff::M5 {
+                                new_ctips: HashMap::from_iter([(sidechain_number, new_ctip)]),
+                            };
+                            let deposits = HashMap::from_iter([(sidechain_number, deposit)]);
+                            res = Some(Either::Left((deposits, diff)))
+                        }
+                    }
+                }
+                Ordering::Equal => return Err(error::HandleM5M6::InvalidM6),
             }
         }
+        Ok(res)
     }
 
     /// Dispatches a single coinbase OP_RETURN message to its handler. M1/M2/M3/M4
@@ -801,10 +844,10 @@ impl BlockHandler<'_> {
     ) -> Result<Option<(TransactionEvent, diff::Tx)>, error::HandleTransaction> {
         let mut res = None;
         match self.handle_m5_m6(rotxn, Cow::Borrowed(transaction))? {
-            Some((Either::Left(deposit), diff)) => {
-                res = Some((TransactionEvent::Deposit(deposit), diff));
+            Some(Either::Left((deposits, diff))) => {
+                res = Some((TransactionEvent::Deposits(deposits), diff::Tx::M5(diff)));
             }
-            Some((Either::Right((sidechain_id, m6id, sequence_number)), diff)) => {
+            Some(Either::Right(((sidechain_id, m6id, sequence_number), diff))) => {
                 let withdrawal_bundle_event = WithdrawalBundleEvent {
                     m6id,
                     sidechain_id,
@@ -815,7 +858,7 @@ impl BlockHandler<'_> {
                 };
                 res = Some((
                     TransactionEvent::WithdrawalBundle(withdrawal_bundle_event),
-                    diff,
+                    diff::Tx::M6(diff),
                 ));
             }
             None => (),
@@ -1046,8 +1089,8 @@ impl BlockHandler<'_> {
             };
             let () = tx_diffs.apply(diff)?;
             match tx_event {
-                TransactionEvent::Deposit(deposit) => {
-                    events.push(deposit.into());
+                TransactionEvent::Deposits(deposits) => {
+                    events.push(BlockEvent::Deposits(deposits));
                 }
                 TransactionEvent::WithdrawalBundle(withdrawal_bundle_event) => {
                     events.push(withdrawal_bundle_event.into());
@@ -1983,14 +2026,15 @@ mod tests {
         let result = test_handler(&dbs)
             .handle_m5_m6(&rotxn, Cow::Borrowed(&tx))
             .into_diagnostic()?;
-        let Some((Either::Left(deposit), diff)) = result else {
+        let Some(Either::Left((deposits, diff))) = result else {
             panic!("expected M5 deposit");
         };
-
-        assert_eq!(deposit.sidechain_id, sc);
-        assert_eq!(deposit.value, deposit_amount);
-        assert_eq!(deposit.address, b"sidechain_address");
-        assert_eq!(diff.new_ctip.value, deposit_amount);
+        assert_eq!(deposits.len(), 1);
+        assert!(deposits.contains_key(&sc));
+        assert_eq!(deposits[&sc].value, deposit_amount);
+        assert_eq!(deposits[&sc].address, b"sidechain_address");
+        assert!(diff.new_ctips.contains_key(&sc));
+        assert_eq!(diff.new_ctips[&sc].value, deposit_amount);
         Ok(())
     }
 
@@ -2018,14 +2062,16 @@ mod tests {
         let deposit_amount = Amount::from_sat(3_000);
         let tx = build_m5_deposit_tx(sc, old_outpoint, old_value, deposit_amount);
 
-        let Some((Either::Left(deposit), diff)) = test_handler(&dbs)
+        let Some(Either::Left((deposits, diff))) = test_handler(&dbs)
             .handle_m5_m6(&rwtxn, Cow::Borrowed(&tx))
             .into_diagnostic()?
         else {
             panic!("expected M5 deposit");
         };
-        assert_eq!(deposit.value, deposit_amount);
-        assert_eq!(diff.new_ctip.value, old_value + deposit_amount);
+        assert!(deposits.contains_key(&sc));
+        assert_eq!(deposits[&sc].value, deposit_amount);
+        assert!(diff.new_ctips.contains_key(&sc));
+        assert_eq!(diff.new_ctips[&sc].value, old_value + deposit_amount);
         Ok(())
     }
 
