@@ -1033,7 +1033,15 @@ impl BlockHandler<'_> {
             }) {
                 Ok(result) => result,
                 Err(err) => {
-                    if err.is_fatal() {
+                    // BIP 301: "If a mainchain block contains an M8 transaction
+                    // without the corresponding M7 output, then that block MUST
+                    // be considered invalid." This is a block-invalidating
+                    // condition, so reject the block rather than skipping the tx.
+                    let block_invalid = matches!(
+                        err,
+                        error::HandleTransaction::M8(error::HandleM8::NotAcceptedByMiners)
+                    );
+                    if block_invalid || err.is_fatal() {
                         return Err(err.into());
                     }
                     tracing::warn!(
@@ -1688,7 +1696,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        messages::{M4AckBundles, M8BmmRequest, create_m5_deposit_output},
+        messages::{M4AckBundles, M7BmmAccept, M8BmmRequest, create_m5_deposit_output},
         types::{
             BmmCommitment, BmmCommitments, Ctip, M6id, SidechainDescription, SidechainNumber,
             SidechainProposal,
@@ -1910,13 +1918,32 @@ mod tests {
         let mut rwtxn = dbs.write_txn().into_diagnostic()?;
         let prev_hash = BlockHash::all_zeros();
 
-        // M8 request with no matching M7 in coinbase → non-fatal error
-        let m8_tx = build_m8_tx(SidechainNumber(1), [0x42; 32], prev_hash);
+        // A stale M8: the coinbase carries the matching M7, but the M8's
+        // prev_mainchain_block_hash does not reference this block's parent, so
+        // handle_m8 returns the non-fatal `BmmRequestExpired`. Per BIP 301 the
+        // block is still valid (M7/M8 correspondence is only S and H), so
+        // connect_block must skip the stale M8 and succeed.
+        let sidechain_number = SidechainNumber(1);
+        let commitment = [0x42; 32];
+        let m7_script: ScriptBuf = M7BmmAccept {
+            sidechain_number,
+            sidechain_block_hash: BmmCommitment(commitment),
+        }
+        .try_into()
+        .into_diagnostic()?;
+        let m8_tx = build_m8_tx(
+            sidechain_number,
+            commitment,
+            BlockHash::from_byte_array([0x99; 32]),
+        );
         let block = build_test_block(
             prev_hash,
             TestBlockParts {
+                extra_coinbase_outputs: vec![TxOut {
+                    script_pubkey: m7_script,
+                    value: Amount::ZERO,
+                }],
                 extra_txs: vec![m8_tx],
-                ..Default::default()
             },
         );
 
@@ -1926,7 +1953,7 @@ mod tests {
 
         assert!(
             test_handler(&dbs).connect_block(&mut rwtxn, &block).is_ok(),
-            "connect_block should succeed despite non-fatal M8 error"
+            "connect_block should skip a stale (non-fatal) M8 BMM request"
         );
         Ok(())
     }
