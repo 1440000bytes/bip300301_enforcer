@@ -1958,6 +1958,46 @@ mod tests {
         Ok(())
     }
 
+    /// BIP 301: "If a mainchain block contains an M8 transaction without the
+    /// corresponding M7 output, then that block MUST be considered invalid."
+    /// connect_block must reject such a block (non-fatally), not skip the M8
+    /// and accept the block.
+    #[test]
+    fn connect_block_rejects_m8_without_m7() -> Result<()> {
+        let (_dir, dbs) = create_test_dbs()?;
+        let mut rwtxn = dbs.write_txn().into_diagnostic()?;
+        let prev_hash = BlockHash::all_zeros();
+
+        // M8 referencing this block's parent, but with no matching M7 in the
+        // coinbase.
+        let m8_tx = build_m8_tx(SidechainNumber(1), [0x42; 32], prev_hash);
+        let block = build_test_block(
+            prev_hash,
+            TestBlockParts {
+                extra_txs: vec![m8_tx],
+                ..Default::default()
+            },
+        );
+
+        dbs.block_hashes
+            .put_headers(&mut rwtxn, &[(block.header, 0)])
+            .into_diagnostic()?;
+
+        let err = test_handler(&dbs)
+            .connect_block(&mut rwtxn, &block)
+            .expect_err("M8 without corresponding M7 must invalidate the block");
+        assert!(matches!(
+            err,
+            error::ConnectBlock::Transaction(error::HandleTransaction::M8(
+                error::HandleM8::NotAcceptedByMiners
+            ))
+        ));
+        // Block-invalidation, not DB corruption: the error must stay non-fatal
+        // so the live path rejects the block rather than halting the enforcer.
+        assert!(!err.is_fatal());
+        Ok(())
+    }
+
     #[test]
     fn connect_then_disconnect_restores_db_state() -> Result<()> {
         let (_dir, dbs) = create_test_dbs()?;
