@@ -1,0 +1,86 @@
+[package]
+name = "bip300301_enforcer_fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Pin to the same rust-bitcoin the enforcer uses so the differential oracle and
+# the code under test share one set of types/decoders.
+bitcoin = { version = "0.32.100", features = ["serde"] }
+
+[dependencies.bip300301_enforcer_lib]
+path = "../lib"
+
+# Keep the fuzz crate out of the parent workspace so cargo-fuzz manages it
+# independently and the heavy enforcer workspace lints don't apply here.
+[workspace]
+
+# The enforcer lib relies on these crates.io patches from the parent workspace
+# (`../Cargo.toml`). Because this fuzz crate is its own workspace, the parent's
+# `[patch]` table does not apply, so the lib fails to build (e.g.
+# `Rotation::with_max_bytes`) unless we mirror them here.
+[patch.crates-io.bitcoin-send-tx-p2p]
+git = "https://github.com/Ash-L2L/bitcoin-send-tx-p2p.git"
+branch = "2026-02-28-flush-tcpstream"
+
+[patch.crates-io.temp-dir]
+git = "https://gitlab.com/A-Manning/leonhard-llc-ops.git"
+branch = "temp-dir-leak"
+
+[patch.crates-io.tracing-appender]
+git = "https://github.com/torkelrogstad/tokio-tracing.git"
+branch = "log-rotation-size"
+
+[profile.release]
+debug = 1
+# Differential fuzzing relies on arithmetic-overflow panics (e.g. unchecked
+# subtraction) surfacing as crashes, so keep overflow checks on in fuzz builds.
+overflow-checks = true
+debug-assertions = true
+
+[[bin]]
+name = "sidechain_declaration"
+path = "fuzz_targets/sidechain_declaration.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "coinbase_message"
+path = "fuzz_targets/coinbase_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "m8_request"
+path = "fuzz_targets/m8_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "op_drivechain"
+path = "fuzz_targets/op_drivechain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compute_m6id"
+path = "fuzz_targets/compute_m6id.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "blinded_m6"
+path = "fuzz_targets/blinded_m6.rs"
+test = false
+doc = false
+bench = false
