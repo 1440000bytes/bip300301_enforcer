@@ -32,6 +32,12 @@ never panic and must return the same accept/reject/fatal verdict for the same
 `(state, tx)` — a run-to-run divergence, especially on the fatal axis, would
 split the network. The `fuzzing` feature is off in normal/release builds.
 
+In its M6 mode the harness builds a clean withdrawal-shaped tx and pre-registers
+the matching pending bundle (computing the `m6id` exactly as the validator
+does, then lowering the inclusion threshold), so the otherwise-unreachable M6
+*withdrawal-success* path (`handle_m6`, treasury update, bundle removal) is
+exercised — a random m6id could never match an approved bundle.
+
 The fuzz profile keeps `overflow-checks` and `debug-assertions` on so that
 unchecked arithmetic (a real divergence from rust-bitcoin's checked decoders)
 surfaces as a crash.

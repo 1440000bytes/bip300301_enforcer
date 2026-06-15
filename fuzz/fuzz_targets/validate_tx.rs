@@ -29,15 +29,20 @@ struct Scenario {
     ctips: Vec<CtipSeed>,
     pending: Vec<(u8, u8)>,
     tx: Transaction,
+    m6_mode: bool,
+}
+
+fn txin(previous_output: OutPoint) -> TxIn {
+    TxIn {
+        previous_output,
+        script_sig: ScriptBuf::new(),
+        sequence: Sequence::MAX,
+        witness: Witness::new(),
+    }
 }
 
 impl<'a> Arbitrary<'a> for Scenario {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        let mut active = Vec::new();
-        for _ in 0..u.int_in_range(0..=4)? {
-            active.push(u.arbitrary()?);
-        }
-
         let mut ctips = Vec::new();
         for _ in 0..u.int_in_range(0..=4)? {
             ctips.push(CtipSeed {
@@ -48,64 +53,99 @@ impl<'a> Arbitrary<'a> for Scenario {
             });
         }
 
+        let mut active = Vec::new();
+        for _ in 0..u.int_in_range(0..=4)? {
+            active.push(u.arbitrary()?);
+        }
+
         let mut pending = Vec::new();
         for _ in 0..u.int_in_range(0..=4)? {
             pending.push((u.arbitrary()?, u.arbitrary()?));
         }
 
-        // Build the candidate tx structurally so it actually engages the M5/M6
-        // logic: inputs are biased toward spending a seeded CTIP outpoint, and
-        // outputs toward OP_DRIVECHAIN treasury / OP_RETURN address shapes.
-        let mut input = Vec::new();
-        for _ in 0..u.int_in_range(0..=3)? {
-            let previous_output = if !ctips.is_empty() && u.arbitrary()? {
-                let c = &ctips[u.choose_index(ctips.len())?];
-                OutPoint {
-                    txid: Txid::from_byte_array(c.txid),
-                    vout: c.vout,
-                }
+        // In M6 mode, build a clean withdrawal-shaped tx: exactly one input
+        // spending a seeded CTIP, a treasury OP_DRIVECHAIN output at index 0
+        // worth less than the old treasury, then payout outputs. The lib side
+        // pre-registers the matching bundle so the M6 success path is reached.
+        let m6_mode = !ctips.is_empty() && u.arbitrary()?;
+        let tx = if m6_mode {
+            let c = &ctips[u.choose_index(ctips.len())?];
+            // Ensure the spent CTIP's sidechain is active (required for M6).
+            if !active.contains(&c.sidechain) {
+                active.push(c.sidechain);
+            }
+            let input = vec![txin(OutPoint {
+                txid: Txid::from_byte_array(c.txid),
+                vout: c.vout,
+            })];
+            // Treasury output: strictly less than old value => M6 classification.
+            let new_treasury = if c.value > 0 {
+                u.int_in_range(0..=c.value - 1)?
             } else {
-                OutPoint {
-                    txid: Txid::from_byte_array(u.arbitrary()?),
-                    vout: u.int_in_range(0..=3)?,
-                }
+                0
             };
-            input.push(TxIn {
-                previous_output,
-                script_sig: ScriptBuf::new(),
-                sequence: Sequence::MAX,
-                witness: Witness::new(),
-            });
-        }
-
-        let mut output = Vec::new();
-        for _ in 0..u.int_in_range(0..=4)? {
-            let script_pubkey = match u.int_in_range(0u8..=2)? {
-                // OP_DRIVECHAIN treasury output — drives M5/M6 classification.
-                0 => op_drivechain_script(SidechainNumber(u.arbitrary()?)),
-                // OP_RETURN address output (M5 deposit address).
-                1 => {
-                    let len = u.int_in_range(0..=40usize)?;
-                    let bytes = u.bytes(len)?.to_vec();
-                    match PushBytesBuf::try_from(bytes) {
-                        Ok(pb) => ScriptBuf::new_op_return(pb),
-                        Err(_) => ScriptBuf::new(),
+            let mut output = vec![TxOut {
+                value: Amount::from_sat(new_treasury),
+                script_pubkey: op_drivechain_script(SidechainNumber(c.sidechain)),
+            }];
+            for _ in 0..u.int_in_range(0..=3)? {
+                output.push(TxOut {
+                    value: Amount::from_sat(u.int_in_range(0..=c.value)?),
+                    script_pubkey: ScriptBuf::new(),
+                });
+            }
+            Transaction {
+                version: Version::TWO,
+                lock_time: LockTime::ZERO,
+                input,
+                output,
+            }
+        } else {
+            // Generic tx: inputs biased toward spending seeded CTIPs, outputs
+            // toward OP_DRIVECHAIN treasury / OP_RETURN address shapes.
+            let mut input = Vec::new();
+            for _ in 0..u.int_in_range(0..=3)? {
+                let previous_output = if !ctips.is_empty() && u.arbitrary()? {
+                    let c = &ctips[u.choose_index(ctips.len())?];
+                    OutPoint {
+                        txid: Txid::from_byte_array(c.txid),
+                        vout: c.vout,
                     }
-                }
-                // Plain output.
-                _ => ScriptBuf::new(),
-            };
-            output.push(TxOut {
-                value: Amount::from_sat(u.arbitrary()?),
-                script_pubkey,
-            });
-        }
+                } else {
+                    OutPoint {
+                        txid: Txid::from_byte_array(u.arbitrary()?),
+                        vout: u.int_in_range(0..=3)?,
+                    }
+                };
+                input.push(txin(previous_output));
+            }
 
-        let tx = Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input,
-            output,
+            let mut output = Vec::new();
+            for _ in 0..u.int_in_range(0..=4)? {
+                let script_pubkey = match u.int_in_range(0u8..=2)? {
+                    0 => op_drivechain_script(SidechainNumber(u.arbitrary()?)),
+                    1 => {
+                        let len = u.int_in_range(0..=40usize)?;
+                        let bytes = u.bytes(len)?.to_vec();
+                        match PushBytesBuf::try_from(bytes) {
+                            Ok(pb) => ScriptBuf::new_op_return(pb),
+                            Err(_) => ScriptBuf::new(),
+                        }
+                    }
+                    _ => ScriptBuf::new(),
+                };
+                output.push(TxOut {
+                    value: Amount::from_sat(u.arbitrary()?),
+                    script_pubkey,
+                });
+            }
+
+            Transaction {
+                version: Version::TWO,
+                lock_time: LockTime::ZERO,
+                input,
+                output,
+            }
         };
 
         Ok(Scenario {
@@ -113,6 +153,7 @@ impl<'a> Arbitrary<'a> for Scenario {
             ctips,
             pending,
             tx,
+            m6_mode,
         })
     }
 }
@@ -123,5 +164,6 @@ fuzz_target!(|scenario: Scenario| {
         &scenario.ctips,
         &scenario.pending,
         &scenario.tx,
+        scenario.m6_mode,
     );
 });

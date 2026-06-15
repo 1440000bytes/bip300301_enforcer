@@ -6,6 +6,7 @@ use bitcoin::{Amount, BlockHash, OutPoint, Transaction, Txid, hashes::Hash as _}
 
 use super::task::BlockHandler;
 use super::test_utils::{create_test_dbs, test_block_header, test_sidechain};
+use crate::messages::compute_m6id;
 use crate::types::{Ctip, M6id, SidechainNumber};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,11 +46,19 @@ pub struct CtipSeed {
 ///     the same input. A consensus validator that diverged run-to-run (or, on
 ///     the fatal axis, halted on one node but not another) would split the
 ///     network.
+///
+/// When `reach_m6_success` is set, the harness drives the otherwise
+/// unreachable M6 *withdrawal-success* path: for a single-input tx that spends a
+/// seeded treasury CTIP, it computes the bundle's `m6id` exactly as the
+/// validator will, pre-registers it as a pending bundle, and lowers the
+/// inclusion threshold so the vote check passes. This exercises `handle_m6` and
+/// the treasury-update logic, which a random m6id could never match.
 pub fn run_validate_tx(
     active_sidechains: &[u8],
     ctips: &[CtipSeed],
     pending: &[(u8, u8)],
     tx: &Transaction,
+    reach_m6_success: bool,
 ) {
     let Ok((_dir, dbs)) = create_test_dbs() else {
         return;
@@ -117,7 +126,37 @@ pub fn run_validate_tx(
         return;
     }
 
-    let handler = BlockHandler::new(&dbs, bitcoin::Network::Regtest);
+    let mut handler = BlockHandler::new(&dbs, bitcoin::Network::Regtest);
+
+    if reach_m6_success {
+        // A withdrawal spends exactly one input — the treasury CTIP. If this tx
+        // does that against a seeded CTIP, register the matching pending bundle
+        // so the M6 success path is reachable.
+        if let [input] = tx.input.as_slice() {
+            let spent = ctips.iter().find(|seed| {
+                seed.vout == input.previous_output.vout
+                    && Txid::from_byte_array(seed.txid) == input.previous_output.txid
+                    && active.contains(&seed.sidechain)
+            });
+            if let Some(seed) = spent {
+                // Compute the m6id exactly as `handle_m5_m6`/`handle_m6` will:
+                // from the tx blinded against the spent CTIP's value.
+                if let Ok((m6id, sc)) = compute_m6id(tx.clone(), Amount::from_sat(seed.value)) {
+                    if sc == SidechainNumber(seed.sidechain) {
+                        // Best-effort: if registration fails the run just won't
+                        // reach the success path, which is harmless.
+                        dbs.active_sidechains
+                            .put_pending_m6id(&mut rwtxn, &sc, m6id, 0)
+                            .ok();
+                    }
+                }
+            }
+        }
+        // `put_pending_m6id` records a single vote; clear the threshold so the
+        // bundle is includable and `handle_m6` proceeds past the vote check.
+        handler.thresholds.withdrawal_bundle_inclusion_threshold = 0;
+    }
+
     let first = verdict(handler.validate_tx(&mut rwtxn, tx));
     let second = verdict(handler.validate_tx(&mut rwtxn, tx));
     assert_eq!(
