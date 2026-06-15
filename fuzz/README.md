@@ -20,6 +20,17 @@ rust-bitcoin as the oracle.
 | `op_drivechain` | `parse_op_drivechain` | no panic + builder round-trip + valid rust-bitcoin script |
 | `compute_m6id` | `compute_m6id` | rust-bitcoin-decoded tx must not panic the M6 blinding |
 | `blinded_m6` | `BlindedM6::try_from` | rust-bitcoin-decoded tx must be rejected typed, not by panic |
+| `validate_tx` | `Validator::validate_tx` (M5/M6/M8) | stateful: no panic + deterministic accept/reject/fatal verdict |
+
+The first six targets are stateless. `validate_tx` is *stateful*: it builds a
+small validator state (active sidechains, treasury CTIPs, pending withdrawal
+bundles, chain tip) via the `bip300301_enforcer_lib` `fuzzing` feature, then runs
+a fuzzer-built transaction through the mempool-time validation path so the deep
+money-path logic (treasury-spend tracking, M5 deposit / M6 withdrawal
+classification) is actually reached. Its oracle: a consensus validator must
+never panic and must return the same accept/reject/fatal verdict for the same
+`(state, tx)` — a run-to-run divergence, especially on the fatal axis, would
+split the network. The `fuzzing` feature is off in normal/release builds.
 
 The fuzz profile keeps `overflow-checks` and `debug-assertions` on so that
 unchecked arithmetic (a real divergence from rust-bitcoin's checked decoders)

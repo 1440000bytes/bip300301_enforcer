@@ -1,13 +1,13 @@
-//! Shared test utilities for `crate::validator` tests.
-//! This module is gated behind `#[cfg(test)]` in the parent module.
+//! Shared test utilities for `crate::validator`. Gated behind
+//! `#[cfg(any(test, feature = "fuzzing"))]` in the parent module: the fuzz
+//! harness (`validator::fuzz`) reuses the state builders.
 
-use bitcoin::{BlockHash, Txid, hashes::Hash as _};
+use bitcoin::{BlockHash, hashes::Hash as _};
 use miette::IntoDiagnostic;
 
 use super::dbs::Dbs;
 use crate::types::{
-    M6id, Sidechain, SidechainDescription, SidechainNumber, SidechainProposal,
-    SidechainProposalStatus,
+    Sidechain, SidechainDescription, SidechainNumber, SidechainProposal, SidechainProposalStatus,
 };
 
 pub fn create_test_dbs() -> miette::Result<(temp_dir::TempDir, Dbs)> {
@@ -30,8 +30,10 @@ pub fn test_sidechain(sidechain_number: u8, proposal_height: u32) -> Sidechain {
     }
 }
 
-pub fn test_m6id(byte: u8) -> M6id {
-    M6id(Txid::from_byte_array([byte; 32]))
+#[cfg(test)]
+pub fn test_m6id(byte: u8) -> crate::types::M6id {
+    use bitcoin::Txid;
+    crate::types::M6id(Txid::from_byte_array([byte; 32]))
 }
 
 /// Minimal block header for tests — only `prev_blockhash` is meaningful

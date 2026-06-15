@@ -67,6 +67,13 @@ uuid = { workspace = true }
 default = ["rustls"]
 openssl = ["bdk_electrum/use-openssl"]
 rustls = ["bdk_electrum/use-rustls"]
+# Exposes `validator::fuzz` entry points and the test-state builders for the
+# cargo-fuzz harness in `../fuzz`. Not enabled in normal or release builds.
+fuzzing = ["dep:temp-dir"]
+
+[dependencies.temp-dir]
+workspace = true
+optional = true
 
 [dev-dependencies]
 temp-dir = { workspace = true }

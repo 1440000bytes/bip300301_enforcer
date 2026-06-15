@@ -30,8 +30,10 @@ pub mod main_rest_client;
 pub mod parse_block_files;
 mod sync_state_summary;
 mod task;
-#[cfg(test)]
+#[cfg(any(test, feature = "fuzzing"))]
 mod test_utils;
+#[cfg(feature = "fuzzing")]
+pub mod fuzz;
 
 use self::dbs::{Dbs, PendingM6ids};
 pub use self::sync_state_summary::{

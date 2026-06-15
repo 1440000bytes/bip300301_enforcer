@@ -9,12 +9,15 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
 # Pin to the same rust-bitcoin the enforcer uses so the differential oracle and
 # the code under test share one set of types/decoders.
 bitcoin = { version = "0.32.100", features = ["serde"] }
 
 [dependencies.bip300301_enforcer_lib]
 path = "../lib"
+# Exposes `validator::fuzz` (validate_tx harness entry) and the state builders.
+features = ["fuzzing"]
 
 # Keep the fuzz crate out of the parent workspace so cargo-fuzz manages it
 # independently and the heavy enforcer workspace lints don't apply here.
@@ -81,6 +84,13 @@ bench = false
 [[bin]]
 name = "blinded_m6"
 path = "fuzz_targets/blinded_m6.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "validate_tx"
+path = "fuzz_targets/validate_tx.rs"
 test = false
 doc = false
 bench = false
