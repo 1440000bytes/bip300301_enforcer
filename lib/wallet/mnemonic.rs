@@ -69,6 +69,14 @@ impl EncryptedMnemonic {
     }
 
     pub(crate) fn decrypt(&self, password: &str) -> Result<Mnemonic, error::DecryptMnemonic> {
+        // Aes256Gcm uses a 12-byte nonce; a stored IV of any other length (a
+        // corrupt or crafted DB) would otherwise panic in `Nonce::from_slice`.
+        const NONCE_LEN: usize = 12;
+        if self.initialization_vector.len() != NONCE_LEN {
+            return Err(error::DecryptMnemonic::InvalidNonceLength {
+                len: self.initialization_vector.len(),
+            });
+        }
         let nonce = Nonce::from_slice(self.initialization_vector.as_ref());
 
         let key_bytes = stretch_password(password, self.key_salt.as_ref())?;

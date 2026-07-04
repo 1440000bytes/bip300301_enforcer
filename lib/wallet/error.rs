@@ -280,6 +280,8 @@ impl ToStatus for EncryptMnemonic {
 pub enum DecryptMnemonic {
     #[error("failed to decrypt mnemonic")]
     Decrypt(#[from] aes_gcm::Error),
+    #[error("invalid initialization vector length {len}, expected 12 bytes")]
+    InvalidNonceLength { len: usize },
     #[error(transparent)]
     ParseMnemonic(#[from] ParseMnemonic),
     #[error(transparent)]
