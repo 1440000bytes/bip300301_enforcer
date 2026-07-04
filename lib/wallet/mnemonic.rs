@@ -128,4 +128,25 @@ mod tests {
         assert_ne!(a.initialization_vector, b.initialization_vector);
         assert_ne!(a.ciphertext_mnemonic, b.ciphertext_mnemonic);
     }
+
+    /// A `wallet_seeds` row with an initialization vector that isn't 12 bytes
+    /// (corrupt or crafted DB) must return an error, not panic in
+    /// `Nonce::from_slice`.
+    #[test]
+    fn decrypt_with_invalid_iv_length_errors() {
+        for iv_len in [0usize, 8, 11, 13, 32] {
+            let enc = EncryptedMnemonic {
+                initialization_vector: vec![0u8; iv_len],
+                ciphertext_mnemonic: vec![0u8; 16],
+                key_salt: vec![0u8; 16],
+            };
+            assert!(
+                matches!(
+                    enc.decrypt("password"),
+                    Err(error::DecryptMnemonic::InvalidNonceLength { len }) if len == iv_len
+                ),
+                "IV length {iv_len} must error, not panic"
+            );
+        }
+    }
 }
