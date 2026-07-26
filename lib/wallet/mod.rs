@@ -1020,6 +1020,14 @@ impl Wallet {
     /// This is also known as a M5 message, in BIP300 nomenclature.
     ///
     /// https://github.com/bitcoin/bips/blob/master/bip-0300.mediawiki#m5----deposit-btc-from-l1-to-l2
+    /// A deposit must be worth at least the fee it pays.
+    fn check_deposit_fee(value: Amount, fee: Amount) -> Result<(), error::FeeExceedsValue> {
+        if fee > value {
+            return Err(error::FeeExceedsValue { fee, value });
+        }
+        Ok(())
+    }
+
     pub async fn create_deposit(
         &self,
         sidechain_number: SidechainNumber,
@@ -1027,6 +1035,9 @@ impl Wallet {
         value: Amount,
         fee: Option<Amount>,
     ) -> Result<bitcoin::Txid, error::CreateDeposit> {
+        if let Some(fee) = fee {
+            let () = Self::check_deposit_fee(value, fee)?;
+        }
         let block_height = self
             .inner
             .validator()

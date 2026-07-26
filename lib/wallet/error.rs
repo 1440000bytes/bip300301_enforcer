@@ -730,6 +730,8 @@ pub enum CreateDeposit {
     #[error("failed to convert sidechain address to PushBytesBuf")]
     ConvertSidechainAddress(#[source] bitcoin::script::PushBytesError),
     #[error(transparent)]
+    FeeExceedsValue(#[from] FeeExceedsValue),
+    #[error(transparent)]
     OutputAmountOverflow(#[from] crate::types::AmountOverflowError),
     #[error(transparent)]
     NotUnlocked(#[from] NotUnlocked),
@@ -752,6 +754,7 @@ impl ToStatus for CreateDeposit {
             | Self::BroadcastNonstandardTx { .. }
             | Self::BroadcastUnsuccessful { .. }
             | Self::ConvertSidechainAddress(_) => StatusBuilder::new(self),
+            Self::FeeExceedsValue(err) => err.builder(),
             Self::OutputAmountOverflow(err) => err.builder(),
             Self::NotUnlocked(err) => err.builder(),
             Self::Persistence(err) => StatusBuilder::new(err),
@@ -760,6 +763,19 @@ impl ToStatus for CreateDeposit {
             Self::TryGetCtip(err) => err.builder(),
             Self::TryGetMainchainTipHeight(err) => err.builder(),
         }
+    }
+}
+
+#[derive(Debug, Diagnostic, Error)]
+#[error("deposit fee `{fee}` exceeds deposit value `{value}`")]
+pub struct FeeExceedsValue {
+    pub fee: bitcoin::Amount,
+    pub value: bitcoin::Amount,
+}
+
+impl ToStatus for FeeExceedsValue {
+    fn builder(&self) -> StatusBuilder<'_> {
+        StatusBuilder::new(self).code(connectrpc::ErrorCode::InvalidArgument)
     }
 }
 
