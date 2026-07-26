@@ -1972,3 +1972,27 @@ impl Wallet {
         self.inner.create_new_wallet(mnemonic, password).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::Amount;
+
+    use super::{Wallet, error};
+
+    #[test]
+    fn check_deposit_fee_rejects_fee_above_value() {
+        let value = Amount::from_sat(1_000);
+        let fee = Amount::from_sat(2_000);
+        assert!(matches!(
+            Wallet::check_deposit_fee(value, fee),
+            Err(error::FeeExceedsValue { .. })
+        ));
+    }
+
+    #[test]
+    fn check_deposit_fee_accepts_fee_up_to_value() {
+        let value = Amount::from_sat(1_000);
+        assert!(Wallet::check_deposit_fee(value, Amount::from_sat(999)).is_ok());
+        assert!(Wallet::check_deposit_fee(value, value).is_ok());
+    }
+}
