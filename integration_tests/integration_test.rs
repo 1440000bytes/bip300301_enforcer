@@ -918,6 +918,17 @@ pub fn tests(
         },
         crate::test_node_requirements::test_pruned_node,
     ));
+    async_trials.push(new_trial(
+        "assumeutxo_enforcer_above_snapshot_base".to_string(),
+        TestSetupComponents {
+            bin_paths: bin_paths.clone(),
+            network: Network::Regtest,
+            mode: Mode::NoMempool,
+            file_registry: file_registry.clone(),
+            failure_collector: failure_collector.clone(),
+        },
+        crate::test_node_requirements::test_assumeutxo_enforcer_above_snapshot_base,
+    ));
 
     async_trials.push(new_trial_with_setup(
         "blinded_m6_roundtrip".to_string(),

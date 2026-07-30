@@ -522,3 +522,207 @@ pub async fn test_pruned_node(setup: PreSetup) -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// Spawn a node with an explicit data dir, so a test can replace the node
+/// behind the enforcer while keeping the enforcer's data dir.
+fn spawn_bitcoind_at(
+    setup: &PreSetup,
+    data_dir: std::path::PathBuf,
+    res_tx: mpsc::UnboundedSender<anyhow::Result<()>>,
+) -> anyhow::Result<(Bitcoind, AbortOnDrop<()>, bins::BitcoinCli)> {
+    let mut bitcoind = new_bitcoind(
+        setup.bin_paths.bitcoind()?.clone(),
+        data_dir,
+        &setup.reserved_ports,
+        setup.network,
+        None,
+    );
+    bitcoind.txindex = false;
+    let task = bitcoind.spawn_command_with_args::<String, String, _, _, _>([], [], move |err| {
+        let _err: Result<(), _> = res_tx.unbounded_send(Err(err));
+    });
+    let bitcoin_cli = bitcoind.new_bitcoin_cli(setup.bin_paths.bitcoin_cli()?.clone());
+    Ok((bitcoind, task, bitcoin_cli))
+}
+
+/// Read raw blocks `from_height..=to_height` off a node.
+async fn read_blocks(
+    bitcoin_cli: &bins::BitcoinCli,
+    from_height: u32,
+    to_height: u32,
+) -> anyhow::Result<Vec<String>> {
+    let mut blocks = Vec::new();
+    for height in from_height..=to_height {
+        let block_hash: String = bitcoin_cli
+            .command::<String, _, _, _, _>([], "getblockhash", [height.to_string()])
+            .run_utf8()
+            .await?;
+        blocks.push(
+            bitcoin_cli
+                .command::<String, _, _, _, _>([], "getblock", [block_hash, "0".to_owned()])
+                .run_utf8()
+                .await?,
+        );
+    }
+    Ok(blocks)
+}
+
+/// An enforcer whose tip is already at or above the snapshot base must keep
+/// following the chain while the node background-validates a snapshot.
+///
+/// This is what an operator gets by re-bootstrapping an existing node with
+/// `loadtxoutset` and keeping their enforcer data dir. The node serves every
+/// block from the snapshot base upwards for the whole background sync (the
+/// snapshot chainstate downloaded and stored them on its way to the tip), so
+/// there is nothing for the enforcer to wait for.
+///
+/// Verified against Bitcoin Core master (v31.99.0-67efced1fc83): with the
+/// background chainstate at genesis and the snapshot chainstate at height
+/// 399, `getblock` refuses heights 1, 149 and 299 with `Block not available
+/// (not fully downloaded)` and serves heights 300, 349 and 399.
+pub async fn test_assumeutxo_enforcer_above_snapshot_base(
+    setup: PreSetup,
+) -> anyhow::Result<()> {
+    const EXTRA_BLOCKS: u32 = 100;
+
+    // ---- phase 1: a plain node, and an enforcer synced to its tip ----
+    let (res_tx, _res_rx) = mpsc::unbounded();
+    let (full_node, full_node_task, full_node_cli) = spawn_bitcoind(&setup, &[], res_tx)?;
+    let () = wait_for_bitcoind_ready(&full_node_cli).await?;
+
+    let fixture = load_snapshot_fixture(node_major_version(&full_node_cli).await?)?;
+    let blocks_hex = std::fs::read_to_string(assumeutxo_fixture_path(&fixture.blocks))?;
+    let base_blocks: Vec<&str> = blocks_hex.lines().collect();
+    let () = submit_blocks(&full_node_cli, &base_blocks).await?;
+
+    // Extend past the snapshot base, so there is a range of blocks that the
+    // assumeutxo node will be able to serve while its background chainstate
+    // is still at genesis.
+    let _generated: String = full_node_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "generatetoaddress",
+            [EXTRA_BLOCKS.to_string(), UNSPENDABLE_ADDRESS.to_owned()],
+        )
+        .run_utf8()
+        .await?;
+    let synced_height = fixture.base_height + EXTRA_BLOCKS;
+
+    let enforcer_tip = {
+        let spawned = spawn_enforcer(&setup, &full_node)?;
+        wait_for_port(
+            "127.0.0.1",
+            spawned.enforcer.serve_grpc_port,
+            Duration::from_secs(10),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed waiting for enforcer gRPC port: {e}"))?;
+        let uri: http::Uri =
+            format!("http://127.0.0.1:{}", spawned.enforcer.serve_grpc_port).parse()?;
+        let client = ValidatorServiceClient::new(HttpClient::plaintext(), ClientConfig::new(uri));
+        let () = wait_for_enforcer_tip(&client, synced_height).await?;
+        synced_height
+        // `spawned` is dropped here: the enforcer is stopped, its data dir kept.
+    };
+    tracing::info!("enforcer synced to height {enforcer_tip} against a plain node");
+
+    // One more block, handed only to the assumeutxo node below: this is the
+    // block the enforcer must fetch after the node is swapped.
+    let _generated: String = full_node_cli
+        .command::<String, _, _, _, _>([], "generatetoaddress", ["1", UNSPENDABLE_ADDRESS])
+        .run_utf8()
+        .await?;
+    let new_tip_height = synced_height + 1;
+
+    let above_base = read_blocks(&full_node_cli, fixture.base_height + 1, new_tip_height).await?;
+    let above_base: Vec<&str> = above_base.iter().map(String::as_str).collect();
+    let snapshot = assumeutxo_snapshot(&setup, &fixture, &base_blocks).await?;
+
+    // ---- phase 2: replace the node with one that is background-validating ----
+    drop(full_node_task);
+    drop(full_node);
+    sleep(Duration::from_secs(2)).await;
+
+    let assumeutxo_dir = setup.directories.base_dir.path().join("bitcoind-assumeutxo");
+    std::fs::create_dir_all(&assumeutxo_dir)?;
+    let (au_node, _au_node_task, au_cli) = spawn_bitcoind_at(&setup, assumeutxo_dir, {
+        let (res_tx, _res_rx) = mpsc::unbounded();
+        res_tx
+    })?;
+    let () = wait_for_bitcoind_ready(&au_cli).await?;
+
+    for block_hex in base_blocks.iter().chain(above_base.iter()) {
+        let header_hex = block_hex
+            .get(..160)
+            .ok_or_else(|| anyhow::anyhow!("malformed block hex"))?;
+        let _output: String = au_cli
+            .command::<String, _, _, _, _>([], "submitheader", [header_hex])
+            .run_utf8()
+            .await?;
+    }
+    let _loaded: String = au_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "loadtxoutset",
+            [snapshot.to_string_lossy().to_string()],
+        )
+        .run_utf8()
+        .await?;
+    // Only the blocks above the snapshot base. The background chainstate
+    // stays at genesis, exactly as it would be early in a real background
+    // sync.
+    let () = submit_blocks(&au_cli, &above_base).await?;
+
+    // The node itself confirms the split: nothing below the base, everything
+    // from the base upwards.
+    let base_plus_one: String = au_cli
+        .command::<String, _, _, _, _>(
+            [],
+            "getblockhash",
+            [(fixture.base_height + 1).to_string()],
+        )
+        .run_utf8()
+        .await?;
+    let _block: String = au_cli
+        .command::<String, _, _, _, _>([], "getblock", [base_plus_one, "0".to_owned()])
+        .run_utf8()
+        .await
+        .map_err(|err| {
+            anyhow::anyhow!("blocks above the snapshot base must be available: {err:#}")
+        })?;
+
+    // ---- phase 3: the enforcer picks up where it left off ----
+    let mut spawned = spawn_enforcer(&setup, &au_node)?;
+    wait_for_port(
+        "127.0.0.1",
+        spawned.enforcer.serve_grpc_port,
+        Duration::from_secs(10),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed waiting for enforcer gRPC port: {e}"))?;
+
+    let uri: http::Uri = format!("http://127.0.0.1:{}", spawned.enforcer.serve_grpc_port).parse()?;
+    let client = ValidatorServiceClient::new(HttpClient::plaintext(), ClientConfig::new(uri));
+
+    let reached = wait_for_enforcer_tip(&client, new_tip_height).await;
+
+    if reached.is_err() {
+        let output = read_enforcer_output(&setup)?;
+        anyhow::ensure!(
+            !output.contains("waiting for the node's background sync"),
+            "the enforcer stalled waiting for the node's background sync at height \
+             {new_tip_height}, but the node serves every block from the snapshot \
+             base ({}) upwards",
+            fixture.base_height,
+        );
+    }
+    let () = reached?;
+
+    match spawned.res_rx.try_recv() {
+        Err(_empty) => Ok(()),
+        Ok(res) => anyhow::bail!(
+            "enforcer exited during the background sync: {:#}",
+            res.expect_err("enforcer task only reports errors")
+        ),
+    }
+}
